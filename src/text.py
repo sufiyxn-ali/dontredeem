@@ -25,11 +25,15 @@ except Exception as e:
     print(f"Warning: Failed to load DistilBERT model ({e})")
     distilbert_scorer = None
 
+CRITICAL_KEYWORDS = [
+    "deported", "deport", "mrets", "emirates id", "arrest", "warrant", 
+    "police", "penalty", "fine"
+]
+
 SUSPICIOUS_KEYWORDS = [
     "urgent", "bank", "transfer", "otp", "password", 
     "account", "blocked", "compromised", "verify", 
-    "police", "arrest", "warrant", "card", "security",
-    "claim", "confirm", "urgent action", "immediate",
+    "card", "security", "claim", "confirm", "urgent action", "immediate",
     "click link", "updated information", "verify identity",
     "suspend", "virus", "malware", "credit", "debit",
     "social security", "ssn", "federal", "irs", "tax", 
@@ -52,6 +56,7 @@ def text_model(transcript):
         
     transcript_lower = transcript.lower()
     found_keywords = [kw for kw in SUSPICIOUS_KEYWORDS if kw in transcript_lower]
+    found_critical = [kw for kw in CRITICAL_KEYWORDS if kw in transcript_lower]
     
     if distilbert_scorer is not None:
         try:
@@ -61,7 +66,9 @@ def text_model(transcript):
             
             # Boost DistilBERT confidence with hardcoded Regex
             keyword_boost = 0.0
-            if len(found_keywords) >= 3: keyword_boost = 0.3
+            if found_critical:
+                keyword_boost = 0.90
+            elif len(found_keywords) >= 3: keyword_boost = 0.3
             elif len(found_keywords) == 2: keyword_boost = 0.2
             elif len(found_keywords) >= 1: keyword_boost = 0.15
             
@@ -72,6 +79,8 @@ def text_model(transcript):
             # Extract Tokens
             model_tokens = result.suspicious_tokens if result.suspicious_tokens else []
             all_tokens = list(model_tokens)
+            if found_critical:
+                all_tokens.extend([(kw, 1.0) for kw in found_critical[:5]])
             if found_keywords:
                 all_tokens.extend([(kw, 0.8) for kw in found_keywords[:5]])
                 

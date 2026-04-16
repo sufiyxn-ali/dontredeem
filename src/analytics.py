@@ -21,7 +21,7 @@ class SessionStateManager:
         self.total_windows = 0
         self.risk_history = []
         self.suspicious_tokens = set()
-        self.aggregator = RiskAggregator(alpha=0.35)
+        self.aggregator = RiskAggregator(alpha=0.5)
 
     def process_window(self, fused_score, tokens):
         """Records the window and returns the temporally smoothed EMA score."""
