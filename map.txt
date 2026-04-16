@@ -1,1 +1,0 @@
-{'AutoConfig': 'modeling_voiceshield.VoiceShieldConfig', 'AutoModelForAudioClassification': 'modeling_voiceshield.VoiceShieldForAudioClassification'}
