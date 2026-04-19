@@ -6,10 +6,15 @@ from transformers import pipeline
 import warnings
 warnings.filterwarnings('ignore')
 
-# 1. Load HuggingFace Emotion/Stress Transformer Model
+# 1. Load Speech Emotion Recognition Model (prefer local, fallback to HF cache)
 try:
-    print("Loading Speech Emotion Recognition pipeline (superb/hubert-large-superb-er)...")
-    audio_pipeline = pipeline("audio-classification", model="superb/hubert-large-superb-er", trust_remote_code=True)
+    ser_local_path = os.path.join(os.path.dirname(__file__), '..', 'models', 'hubert-large-superb-er')
+    if os.path.exists(ser_local_path):
+        print("Loading localized SER model (hubert-large-superb-er)...")
+        audio_pipeline = pipeline("audio-classification", model=ser_local_path, trust_remote_code=True)
+    else:
+        print("Loading SER model from HF cache (superb/hubert-large-superb-er)...")
+        audio_pipeline = pipeline("audio-classification", model="superb/hubert-large-superb-er", trust_remote_code=True)
 except Exception as e:
     print(f"Warning: Failed to load SER Transformer ({e}).")
     audio_pipeline = None

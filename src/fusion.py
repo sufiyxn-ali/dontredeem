@@ -5,8 +5,8 @@ def fuse_scores(audio_score, text_score, meta_score):
     
     Weights: W_a = 0.5, W_t = 0.3, W_m = 0.2
     """
-    w_a = 0.5
-    w_t = 0.3
+    w_a = 0.3
+    w_t = 0.5
     w_m = 0.2
     
     # Critical Text Override: If the text engine is absolutely confident (>0.85) 

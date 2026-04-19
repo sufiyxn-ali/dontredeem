@@ -9,12 +9,29 @@ from transformers import pipeline
 distillbert_path = os.path.join(os.path.dirname(__file__), '..', 'models', 'DistillBertini', 'files')
 sys.path.insert(0, distillbert_path)
 
-print("Loading speech recognition pipeline (openai/whisper-tiny)...")
+print("Loading localized speech recognition (faster-whisper-small)...")
 try:
-    asr_pipeline = pipeline("automatic-speech-recognition", model="openai/whisper-tiny")
+    from faster_whisper import WhisperModel
+    whisper_path = os.path.join(os.path.dirname(__file__), '..', 'models', 'faster-whisper-small')
+    if os.path.exists(whisper_path):
+        asr_pipeline = WhisperModel(whisper_path, device="cpu", compute_type="int8")
+    else:
+        print("Warning: Offline Faster-Whisper not found.")
+        asr_pipeline = None
 except Exception as e:
     print(f"Warning: Failed to load ASR pipeline ({e})")
     asr_pipeline = None
+
+print("Loading localized Gemma 4 E2B...")
+try:
+    gemma_path = os.path.join(os.path.dirname(__file__), '..', 'models', 'gemma-4-E2B')
+    if os.path.exists(gemma_path):
+        gemma_pipeline = pipeline("text-generation", model=gemma_path)
+    else:
+        gemma_pipeline = None
+except Exception as e:
+    print(f"Warning: Failed to load Gemma pipeline ({e})")
+    gemma_pipeline = None
 
 try:
     from infer import ScamScorer
@@ -44,8 +61,8 @@ def transcribe(y, sr):
     if asr_pipeline is None:
         return ""
     try:
-        result = asr_pipeline({"array": y, "sampling_rate": sr}, generate_kwargs={"task": "transcribe", "language": "en"})
-        return result.get('text', '').strip()
+        segments, _ = asr_pipeline.transcribe(y, beam_size=1, language="en")
+        return " ".join([segment.text for segment in segments]).strip()
     except Exception as e:
         print(f"Transcription error: {e}")
         return ""
@@ -76,6 +93,27 @@ def text_model(transcript):
             keyword_str = f" | Keywords: {', '.join(found_keywords)}" if found_keywords else ""
             inference = f"DistilBERT: {label.upper()} (Model: {score:.3f}, Boosted: {boosted_score:.3f}){keyword_str}"
             
+            # === WAKE-UP HYBRID ARCHITECTURE ===
+            if boosted_score > 0.30 and gemma_pipeline is not None:
+                print("\n  [Wake-Up] Suspicion > 30%. Waking up Gemma for contextual validation...")
+                prompt = (
+                    "Analyze this phone call transcript. If the caller uses financial manipulation, tech support scams, or high-pressure tactics, answer SCAM. If not, answer SAFE.\n"
+                    f"Transcript: \"{transcript}\"\n"
+                    "Decision:"
+                )
+                try:
+                    res = gemma_pipeline(prompt, max_new_tokens=5, do_sample=False)
+                    gen_text = res[0]['generated_text'][len(prompt):].strip().upper()
+                    print(f"  [Gemma Outputs]: {gen_text}")
+                    if "SCAM" in gen_text:
+                        boosted_score = 1.0
+                        inference = f"Gemma Confirmed SCAM! (DistilBERT Context: {inference})"
+                    else:
+                        boosted_score = min(score, 0.4) # Soften the blow if Gemma disagrees
+                        inference = f"Gemma Overrules: SAFE. (DistilBERT Context: {inference})"
+                except Exception as e:
+                    print(f"  [Gemma Execution Error]: {e}")
+                    
             # Extract Tokens
             model_tokens = result.suspicious_tokens if result.suspicious_tokens else []
             all_tokens = list(model_tokens)
@@ -93,10 +131,37 @@ def text_model(transcript):
     # Fallback Architecture: Pure keyword math
     score = 0.0
     tokens = []
-    if len(found_keywords) > 0:
+    
+    if found_critical:
+        score = 0.90
+        inference = f"Fallback Critical: {', '.join(found_critical)}"
+        tokens.extend([(kw, 1.0) for kw in found_critical[:5]])
+    elif len(found_keywords) > 0:
         score = min(len(found_keywords) * 0.25, 1.0)
         inference = f"Fallback Keywords: {', '.join(found_keywords)}"
-        tokens = [(kw, 0.7) for kw in found_keywords[:5]]
+        tokens.extend([(kw, 0.7) for kw in found_keywords[:5]])
     else:
         inference = "No suspicious content detected"
+        
+    # === WAKE-UP HYBRID ARCHITECTURE (Fallback) ===
+    if score > 0.30 and gemma_pipeline is not None:
+        print("\n  [Wake-Up] Fallback suspicion > 30%. Waking up Gemma for contextual validation...")
+        prompt = (
+            "Analyze this phone call transcript. If the caller uses financial manipulation, tech support scams, or high-pressure tactics, answer SCAM. If not, answer SAFE.\n"
+            f"Transcript: \"{transcript}\"\n"
+            "Decision:"
+        )
+        try:
+            res = gemma_pipeline(prompt, max_new_tokens=5, do_sample=False)
+            gen_text = res[0]['generated_text'][len(prompt):].strip().upper()
+            print(f"  [Gemma Outputs]: {gen_text}")
+            if "SCAM" in gen_text:
+                score = 1.0
+                inference = f"Gemma Confirmed SCAM! ({inference})"
+            else:
+                score = min(score, 0.4)
+                inference = f"Gemma Overrules: SAFE. ({inference})"
+        except Exception as e:
+            print(f"  [Gemma Execution Error]: {e}")
+
     return score, inference, tokens
