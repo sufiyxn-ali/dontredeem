@@ -255,28 +255,94 @@ SCAM_INDICATORS = {
     'refund': 0.12, 'prize': 0.15, 'won': 0.12, 'congratulations': 0.12
 }
 
+# ==================== Legitimacy Signals ====================
+STRONG_LEGITIMACY_PHRASES = [
+    # Formal business/academic emails
+    'pleased to inform',
+    'we are pleased',
+    'we were impressed',
+    'impressed with your',
+    'schedule an interview',
+    'interview with',
+    'position in our',
+    'lab position',
+    'research assistant',
+    'we look forward',
+    'looking forward',
+    'our team',
+    'our department',
+    'our company',
+    'our organization',
+    'position available',
+    'available position',
+    'thank you for applying',
+    'thank you for your',
+    'application',
+    'recruiter',
+    'hr department',
+    'human resources',
+    'background check',
+    'opportunity',
+    'let us know',
+    'let me know',
+    'availability',
+    'convenient time',
+    'speak with you',
+    'talking with you',
+    'hearing from you',
+    'this position',
+    'your qualifications',
+    'your background',
+    'experience',
+    'credentials',
+    'impressed',
+    'congratulations',  # "Congratulations on being selected" vs "Congratulations you won"
+    'selected for',
+    'qualified for',
+    'meeting',
+    'discussion',
+]
+
+WEAK_LEGITIMACY_PHRASES = [
+    'in your account',
+    'on our system',
+    'your dashboard',
+    'your profile',
+    'login',
+    'log in',
+    'through our app',
+    'mobile app',
+    'verification link',
+    'confirm identity',
+    'update your information',
+    'refresh',
+    'avoid delays',
+    'avoid issues',
+    'processing delay',
+    'account settings'
+]
+
+OFFICIAL_SENDER_PATTERNS = [
+    'john hopkins',
+    'johns hopkins',
+    'university',
+    'laboratory',
+    'department',
+    '.edu',
+    'recruiting',
+    'recruitment'
+]
+
 def _detect_keywords(text):
     """Extract detected keywords with context awareness for false positive reduction"""
     text_lower = text.lower()
     detected = []
     critical = []
     
-    # Legitimacy signals - phrases indicating genuine business communication
-    legitimacy_signals = [
-        'our system',
-        'in your account',
-        'on our system',
-        'log in',
-        'your dashboard',
-        'your profile',
-        'update it',
-        'refresh',
-        'through our app',
-        'avoid delays',
-        'avoid issues',
-        'processing delay',
-        'account settings'
-    ]
+    # Check for different legitimacy levels
+    has_strong_legitimacy = any(signal in text_lower for signal in STRONG_LEGITIMACY_PHRASES)
+    has_weak_legitimacy = any(signal in text_lower for signal in WEAK_LEGITIMACY_PHRASES)
+    has_official_sender = any(pattern in text_lower for pattern in OFFICIAL_SENDER_PATTERNS)
     
     # Dangerous scam action keywords - what scammers ask for
     scam_dangerous_actions = [
@@ -284,7 +350,6 @@ def _detect_keywords(text):
         'provide ',
         'give me',
         'tell me',
-        'confirm ',
         'click link',
         'click here',
         'verify via',
@@ -294,9 +359,16 @@ def _detect_keywords(text):
         'text us'
     ]
     
-    # Check for legitimacy context
-    has_legitimacy_signal = any(signal in text_lower for signal in legitimacy_signals)
     has_dangerous_action = any(action in text_lower for action in scam_dangerous_actions)
+    
+    # Special case: "congratulations" is only legitimate if NOT paired with dangerous actions
+    # If it says "congratulations... send us your passport/SSN" = SCAM
+    if 'congratulations' in text_lower and has_dangerous_action:
+        # This is likely a fake job offer scam - override legitimacy
+        has_strong_legitimacy = False
+        has_weak_legitimacy = False
+    
+    has_legitimacy_context = has_strong_legitimacy or has_weak_legitimacy or has_official_sender
     
     # Context-aware keyword detection
     uae_scam_keywords = {
@@ -314,7 +386,7 @@ def _detect_keywords(text):
     for keyword, weight in uae_scam_keywords.items():
         if keyword in text_lower:
             # If it's "expired" + legitimate context, don't flag it
-            if keyword == 'expired' and has_legitimacy_signal:
+            if keyword == 'expired' and has_legitimacy_context:
                 pass  # Skip - this is legitimate
             else:
                 critical.append(keyword)
@@ -324,20 +396,27 @@ def _detect_keywords(text):
         if keyword in text_lower:
             # "passport" is only critical if asked to SEND it, not just update it
             if keyword == 'passport':
-                if has_dangerous_action and not has_legitimacy_signal:
+                if has_dangerous_action and not has_legitimacy_context:
                     critical.append(keyword)
             # "expired" is only critical with dangerous action context
             elif keyword == 'expired':
-                if has_dangerous_action and not has_legitimacy_signal:
+                if has_dangerous_action and not has_legitimacy_context:
                     critical.append(keyword)
             else:
                 # All other critical keywords are always flagged
                 critical.append(keyword)
     
-    # Extract suspicious indicators
+    # Extract suspicious indicators (with reduced weight for legitimate contexts)
     for indicator, weight in SCAM_INDICATORS.items():
         if indicator in text_lower:
-            detected.append((indicator, weight))
+            # Reduce weight if strong legitimacy present AND no dangerous actions
+            if has_strong_legitimacy and not has_dangerous_action:
+                adjusted_weight = weight * 0.3
+            elif has_weak_legitimacy and not has_dangerous_action:
+                adjusted_weight = weight * 0.5
+            else:
+                adjusted_weight = weight
+            detected.append((indicator, adjusted_weight))
     
     return list(set(critical)), detected  # Remove duplicates
 
@@ -360,7 +439,7 @@ def transcribe(y, sr):
 # ==================== Main Text Analysis Function ====================
 def text_model(transcript):
     """
-    Multimodal scam detection analysis
+    Multimodal scam detection analysis with false positive reduction
     
     Returns:
         (score, analysis_text, suspicious_tokens)
@@ -371,40 +450,97 @@ def text_model(transcript):
     # Detect keywords and critical indicators
     critical_keywords, scam_indicators = _detect_keywords(transcript)
     
+    # Check for different legitimacy levels
+    text_lower = transcript.lower()
+    has_strong_legitimacy = any(signal in text_lower for signal in STRONG_LEGITIMACY_PHRASES)
+    has_weak_legitimacy = any(signal in text_lower for signal in WEAK_LEGITIMACY_PHRASES)
+    has_official_sender = any(pattern in text_lower for pattern in OFFICIAL_SENDER_PATTERNS)
+    
+    # Dangerous actions that override legitimacy signals
+    scam_dangerous_actions = [
+        'send ',
+        'provide ',
+        'give me',
+        'tell me',
+        'click link',
+        'click here',
+        'verify via',
+        'via sms',
+        'via email',
+        'call us',
+        'text us'
+    ]
+    has_dangerous_action = any(action in text_lower for action in scam_dangerous_actions)
+    
+    # CRITICAL: "congratulations" is ONLY legitimate if NOT paired with dangerous actions
+    # Scammers abuse congratulations messages with "send us your passport/SSN/bank details"
+    if has_dangerous_action:
+        if 'congratulations' in text_lower or 'congratulation' in text_lower:
+            # This is a fake job offer or prize scam - override all legitimacy signals
+            has_strong_legitimacy = False
+            has_weak_legitimacy = False
+    
+    has_any_legitimacy = has_strong_legitimacy or has_weak_legitimacy or has_official_sender
+    
     # Get BiLSTM model prediction
     model_score = 0.5
     if scam_detector and scam_detector.model and scam_detector.tokenizer:
         pred = scam_detector.predict(transcript)
         if pred is not None:
             model_score = pred
-    else:
-        # Fallback if model not loaded
-        pass
     
-    # Check for legitimacy signals (phrases that indicate genuine business)
-    legitimacy_signals = [
-        'our system', 'in your account', 'on our system', 'log in',
-        'your dashboard', 'your profile', 'update it', 'refresh',
-        'through our app', 'avoid delays', 'avoid issues', 'processing delay'
-    ]
-    has_legitimacy_signal = any(signal in transcript.lower() for signal in legitimacy_signals)
+    # ===== FALSE POSITIVE REDUCTION LOGIC =====
+    # If strong legitimacy signals are present, cap the BiLSTM score
+    if has_strong_legitimacy:
+        # Strong signals like "schedule an interview" + "impressed with your background"
+        # should override a high BiLSTM score
+        if model_score > 0.3:
+            print(f"      [FP Reduction] Strong legitimacy detected. Capping BiLSTM: {model_score:.4f} -> 0.15")
+            model_score = 0.15  # Cap at very low score
+    elif has_weak_legitimacy and model_score > 0.6:
+        # Weak signals: moderate reduction
+        print(f"      [FP Reduction] Weak legitimacy detected. Reducing BiLSTM: {model_score:.4f} -> {model_score * 0.4:.4f}")
+        model_score = model_score * 0.4
     
-    # Keyword-based boosting (with context awareness for false positives)
+    # Confidence adjustment: Very high BiLSTM scores (>0.95) are often false positives
+    # Regression to the mean approach
+    if model_score > 0.95 and has_any_legitimacy:
+        print(f"      [Confidence Adjustment] High BiLSTM score with legitimacy context")
+        model_score = 0.35
+    elif model_score > 0.90 and not critical_keywords:
+        # High score but no critical keywords detected?
+        # This suggests model overconfidence
+        print(f"      [Confidence Adjustment] High BiLSTM score but no critical keywords")
+        model_score = min(model_score * 0.5, 0.45)
+    
+    # Keyword-based boosting (with legitimacy context)
     keyword_boost = 0.0
-    if critical_keywords:
+    
+    # Check for dangerous actions paired with suspicious keywords
+    if has_dangerous_action and len(scam_indicators) >= 2:
+        # "send us" + "immediately" + "bank" = RED FLAG
+        keyword_boost = 0.27  # Significant boost for dangerous patterns
+        model_score = max(model_score, 0.35)
+    elif critical_keywords:
         # Critical keywords are strong signals
-        if has_legitimacy_signal:
+        if has_any_legitimacy:
             # Reduced boost if this sounds like legitimate business
-            keyword_boost = 0.10  # Light boost only (legitimate false positive)
-            model_score = max(model_score, 0.2)  # Lower baseline
+            keyword_boost = 0.05  # Very light boost only
+            model_score = max(model_score, 0.15)  # Lower baseline
         else:
             # No legitimacy signal = real alert
-            keyword_boost = 0.30  # Strong boost for critical keywords
-            model_score = max(model_score, 0.4)  # Force higher baseline
+            keyword_boost = 0.30
+            model_score = max(model_score, 0.40)
     elif len(scam_indicators) >= 4:
-        keyword_boost = 0.15
+        if has_any_legitimacy:
+            keyword_boost = 0.05
+        else:
+            keyword_boost = 0.15
     elif len(scam_indicators) >= 2:
-        keyword_boost = 0.08
+        if has_any_legitimacy:
+            keyword_boost = 0.02
+        else:
+            keyword_boost = 0.08
     
     # Combine scores
     final_score = min(model_score + keyword_boost, 1.0)
@@ -416,6 +552,11 @@ def text_model(transcript):
         analysis_parts.append(f"BiLSTM: {model_score:.1%}")
     else:
         analysis_parts.append("BiLSTM: N/A")
+    
+    if has_strong_legitimacy:
+        analysis_parts.append("[Legitimate Business Email]")
+    elif has_weak_legitimacy:
+        analysis_parts.append("[Partial Legitimacy Signals]")
     
     if critical_keywords:
         analysis_parts.append(f"⚠ CRITICAL: {', '.join(critical_keywords[:3])}")

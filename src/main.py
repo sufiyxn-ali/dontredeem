@@ -156,7 +156,7 @@ if __name__ == "__main__":
     
     data_dir = os.path.join(os.path.dirname(__file__), '..', 'data')
     meta_path = os.path.join(data_dir, "metadata.txt")
-    audio_path = os.path.join(data_dir, "sample_sufiyan.wav")
+    audio_path = os.path.join(data_dir, "sample_1audio.wav")
     
     if not os.path.exists(meta_path):
         with open(meta_path, "w") as f: f.write("12/03/2026 23:45, unsaved")
