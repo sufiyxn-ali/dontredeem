@@ -70,8 +70,15 @@ def run_pipeline(audio_path, metadata_path):
     if diarization_model:
         try:
             print("      Diarizing audio file (this may take a moment)...")
-            diar_result = diarization_model(audio_path)
-            for turn, _, speaker in diar_result.itertracks(yield_label=True):
+            # Pass pre-loaded waveform to bypass broken torchcodec file decoding.
+            # Pyannote accepts {"waveform": (channel, time) tensor, "sample_rate": int}
+            waveform_tensor = torch.from_numpy(y).unsqueeze(0)  # (1, samples) — mono channel
+            diar_input = {"waveform": waveform_tensor, "sample_rate": sr}
+            diar_result = diarization_model(diar_input)
+            
+            # Pyannote 4.x returns DiarizeOutput dataclass — itertracks() is on .speaker_diarization
+            annotation = getattr(diar_result, 'speaker_diarization', diar_result)
+            for turn, _, speaker in annotation.itertracks(yield_label=True):
                 speaker_turns.append({"speaker": speaker, "start": turn.start, "end": turn.end})
             print(f"      Found {len(speaker_turns)} speaker turns.")
         except Exception as e:
@@ -183,7 +190,7 @@ if __name__ == "__main__":
 
     data_dir = os.path.join(os.path.dirname(__file__), '..', 'data')
     meta_path = os.path.join(data_dir, "metadata.txt")
-    audio_path = os.path.join(data_dir, "sample_ScamConvo.wav")
+    audio_path = os.path.join(data_dir, "sample_call_notscam.wav")
     
     if not os.path.exists(meta_path):
         with open(meta_path, "w") as f: f.write("12/03/2026 23:45, unsaved")

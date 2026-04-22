@@ -2,22 +2,32 @@ import os
 import torch
 import librosa
 import numpy as np
-from transformers import pipeline
+from transformers import Wav2Vec2FeatureExtractor, HubertForSequenceClassification
 import warnings
 warnings.filterwarnings('ignore')
 
-# 1. Load Speech Emotion Recognition Model (prefer local, fallback to HF cache)
+# 1. Load Speech Emotion Recognition Model via direct inference (bypasses torchcodec)
+#    Uses Wav2Vec2FeatureExtractor + HubertForSequenceClassification instead of pipeline()
+#    to avoid the broken torchcodec audio decoding path on Windows.
+ser_model = None
+ser_feature_extractor = None
+SER_LABELS = ['neu', 'hap', 'ang', 'sad']  # IEMOCAP emotion labels
+
 try:
     ser_local_path = os.path.join(os.path.dirname(__file__), '..', 'models', 'hubert-large-superb-er')
-    if os.path.exists(ser_local_path):
-        print("Loading localized SER model (hubert-large-superb-er)...")
-        audio_pipeline = pipeline("audio-classification", model=ser_local_path, trust_remote_code=True)
-    else:
-        print("Loading SER model from HF cache (superb/hubert-large-superb-er)...")
-        audio_pipeline = pipeline("audio-classification", model="superb/hubert-large-superb-er", trust_remote_code=True)
+    ser_model_name = ser_local_path if os.path.exists(ser_local_path) else "superb/hubert-large-superb-er"
+    
+    label = "localized" if os.path.exists(ser_local_path) else "HF cache"
+    print(f"Loading SER model ({label}) via direct inference...")
+    
+    ser_feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(ser_model_name)
+    ser_model = HubertForSequenceClassification.from_pretrained(ser_model_name)
+    ser_model.eval()
+    print("    [OK] SER model loaded successfully (direct inference mode).")
 except Exception as e:
     print(f"Warning: Failed to load SER Transformer ({e}).")
-    audio_pipeline = None
+    ser_model = None
+    ser_feature_extractor = None
 
 def extract_audio_features(y, sr):
     mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
@@ -67,26 +77,31 @@ def audio_model(y, sr):
     heuristic_score = min(max(heuristic_score, 0.0), 1.0)
     
     # -------------------------
-    # 1. SER Transformer Score
+    # 1. SER Transformer Score (Direct Inference — bypasses torchcodec)
     # -------------------------
     transformer_score = 0.0
     has_transformer = False
     
-    if audio_pipeline is not None:
+    if ser_model is not None and ser_feature_extractor is not None:
         try:
-            results = audio_pipeline(y)
-            # Find the probability of 'ang' (anger/aggression/high-stress)
-            for res in results:
-                # IEMOCAP Labels: neu, hap, ang, sad. We extract 'ang' as stress inducer.
-                # If they are angry/aggressive, it correlates strongly with scam pressure techniques.
-                if res['label'] == 'ang':
-                    transformer_score = res['score']
-                    has_transformer = True
-                    break
+            # Feed raw numpy array directly into the feature extractor
+            inputs = ser_feature_extractor(y, sampling_rate=sr, return_tensors="pt", padding=True)
+            with torch.no_grad():
+                logits = ser_model(**inputs).logits
+            probs = torch.softmax(logits, dim=-1)[0]
+            
+            # Extract probability for each IEMOCAP emotion
+            emotion_scores = {SER_LABELS[i]: probs[i].item() for i in range(len(SER_LABELS))}
+            
+            # We extract 'ang' (anger/aggression) as the stress inducer
+            transformer_score = emotion_scores.get('ang', 0.0)
+            has_transformer = True
+            
             if transformer_score > 0.4:
                 inferences.append(f"SER (Aggression/Stress): {transformer_score:.2f}")
             else:
-                inferences.append(f"SER (Calm/Neutral)")
+                top_emotion = max(emotion_scores, key=emotion_scores.get)
+                inferences.append(f"SER ({top_emotion}: {emotion_scores[top_emotion]:.2f})")
         except Exception as e:
             inferences.append(f"SER offline ({e})")
             
