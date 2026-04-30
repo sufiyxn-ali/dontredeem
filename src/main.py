@@ -29,7 +29,7 @@ def load_diarization():
         print(f"\n[!] Authenticating Pyannote Diarization with HF_TOKEN...")
         pipeline = Pipeline.from_pretrained(
             "pyannote/speaker-diarization-3.1",
-            use_auth_token=HF_TOKEN
+            use_auth_token=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
         )
         # Send to GPU if available
         if torch.cuda.is_available():
@@ -156,7 +156,7 @@ if __name__ == "__main__":
     
     data_dir = os.path.join(os.path.dirname(__file__), '..', 'data')
     meta_path = os.path.join(data_dir, "metadata.txt")
-    audio_path = os.path.join(data_dir, "sample_1audio.wav")
+    audio_path = os.path.join(data_dir, "Scamma2.wav")
     
     if not os.path.exists(meta_path):
         with open(meta_path, "w") as f: f.write("12/03/2026 23:45, unsaved")

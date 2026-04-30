@@ -221,13 +221,19 @@ class ScamDetectionModel:
 
 
 # ==================== Initialize Global Model ====================
+import sys
+sys.path.append(os.path.dirname(__file__))
+import minilm_infer
+
 scam_detector = None
 asr_pipeline = None
 
 try:
-    scam_detector = ScamDetectionModel()
+    # Warm up MiniLM
+    minilm_infer.load_model()
+    scam_detector = minilm_infer
 except Exception as e:
-    print(f"[!] Warning: Scam detector initialization failed: {e}")
+    print(f"[!] Warning: MiniLM Scam detector initialization failed: {e}")
 
 # Load ASR pipeline for transcription
 print("[*] Loading speech recognition pipeline (openai/whisper-tiny)...")
@@ -247,12 +253,12 @@ CRITICAL_KEYWORDS = {
 }
 
 SCAM_INDICATORS = {
-    'urgent': 0.15, 'immediately': 0.15, 'action required': 0.15,
-    'bank': 0.12, 'transfer': 0.12, 'otp': 0.15, 'password': 0.15,
-    'account': 0.10, 'blocked': 0.12, 'compromised': 0.12,
-    'verify': 0.10, 'confirm': 0.10, 'click link': 0.15, 
-    'update information': 0.12, 'virus': 0.12, 'malware': 0.12,
-    'refund': 0.12, 'prize': 0.15, 'won': 0.12, 'congratulations': 0.12
+    'urgent': 0.12, 'immediately': 0.12, 'action required': 0.15,
+    'bank': 0.05, 'transfer': 0.08, 'otp': 0.15, 'password': 0.15,
+    'account': 0.05, 'blocked': 0.10, 'compromised': 0.10,
+    'verify': 0.05, 'confirm': 0.05, 'click link': 0.15, 
+    'update information': 0.10, 'virus': 0.10, 'malware': 0.10,
+    'refund': 0.10, 'prize': 0.15, 'won': 0.10, 'congratulations': 0.08
 }
 
 # ==================== Legitimacy Signals ====================
@@ -304,18 +310,12 @@ STRONG_LEGITIMACY_PHRASES = [
 ]
 
 WEAK_LEGITIMACY_PHRASES = [
-    'in your account',
     'on our system',
     'your dashboard',
     'your profile',
-    'login',
-    'log in',
     'through our app',
     'mobile app',
-    'verification link',
-    'confirm identity',
     'update your information',
-    'refresh',
     'avoid delays',
     'avoid issues',
     'processing delay',
@@ -326,6 +326,8 @@ OFFICIAL_SENDER_PATTERNS = [
     'john hopkins',
     'johns hopkins',
     'university',
+    'college',
+    'research institute',
     'laboratory',
     'department',
     '.edu',
@@ -482,12 +484,14 @@ def text_model(transcript):
     
     has_any_legitimacy = has_strong_legitimacy or has_weak_legitimacy or has_official_sender
     
-    # Get BiLSTM model prediction
+    # Get MiniLM model prediction
     model_score = 0.5
-    if scam_detector and scam_detector.model and scam_detector.tokenizer:
-        pred = scam_detector.predict(transcript)
-        if pred is not None:
-            model_score = pred
+    if scam_detector is not None:
+        try:
+            res = scam_detector.predict_chunk(transcript)
+            model_score = res['confidence']
+        except Exception as e:
+            print(f"      [Error] MiniLM prediction failed: {e}")
     
     # ===== FALSE POSITIVE REDUCTION LOGIC =====
     # If strong legitimacy signals are present, cap the BiLSTM score
@@ -497,7 +501,7 @@ def text_model(transcript):
         if model_score > 0.3:
             print(f"      [FP Reduction] Strong legitimacy detected. Capping BiLSTM: {model_score:.4f} -> 0.15")
             model_score = 0.15  # Cap at very low score
-    elif has_weak_legitimacy and model_score > 0.6:
+    elif has_weak_legitimacy and model_score > 0.3:
         # Weak signals: moderate reduction
         print(f"      [FP Reduction] Weak legitimacy detected. Reducing BiLSTM: {model_score:.4f} -> {model_score * 0.4:.4f}")
         model_score = model_score * 0.4
@@ -548,10 +552,10 @@ def text_model(transcript):
     # Build analysis text
     analysis_parts = []
     
-    if scam_detector and scam_detector.model:
-        analysis_parts.append(f"BiLSTM: {model_score:.1%}")
+    if scam_detector is not None:
+        analysis_parts.append(f"MiniLM: {model_score:.1%}")
     else:
-        analysis_parts.append("BiLSTM: N/A")
+        analysis_parts.append("MiniLM: N/A")
     
     if has_strong_legitimacy:
         analysis_parts.append("[Legitimate Business Email]")
