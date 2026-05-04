@@ -17,7 +17,12 @@ def load_model():
             _model = AutoModelForSequenceClassification.from_pretrained(MODEL_DIR)
             _model.eval()
         except Exception as e:
-            print(f"Error loading MiniLM model from {MODEL_DIR}. Error: {e}")
+            print("\n[!] MiniLM model requested.")
+            print("    Model Required: sentence-transformers/all-MiniLM-L6-v2 on Hugging Face.")
+            print("    Please download to 'models/minilm/best' or update MODEL_DIR.")
+            print("    Using placeholder interface for inference.")
+            _tokenizer = None
+            _model = None
 
 def predict_chunk(text: str) -> dict:
     """

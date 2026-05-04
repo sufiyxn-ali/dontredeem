@@ -15,15 +15,20 @@ SER_LABELS = ['neu', 'hap', 'ang', 'sad']  # IEMOCAP emotion labels
 
 try:
     ser_local_path = os.path.join(os.path.dirname(__file__), '..', 'models', 'hubert-large-superb-er')
-    ser_model_name = ser_local_path if os.path.exists(ser_local_path) else "superb/hubert-large-superb-er"
     
-    label = "localized" if os.path.exists(ser_local_path) else "HF cache"
-    print(f"Loading SER model ({label}) via direct inference...")
-    
-    ser_feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(ser_model_name)
-    ser_model = HubertForSequenceClassification.from_pretrained(ser_model_name)
-    ser_model.eval()
-    print("    [OK] SER model loaded successfully (direct inference mode).")
+    if os.path.exists(ser_local_path):
+        print(f"Loading SER model (localized) via direct inference...")
+        ser_feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(ser_local_path)
+        ser_model = HubertForSequenceClassification.from_pretrained(ser_local_path)
+        ser_model.eval()
+        print("    [OK] SER model loaded successfully (direct inference mode).")
+    else:
+        print("\n[!] Speech Emotion Recognition model requested.")
+        print("    Model Required: superb/hubert-large-superb-er on Hugging Face.")
+        print("    Please download to 'models/hubert-large-superb-er' or configure direct HF access.")
+        print("    Using placeholder acoustic heuristics for SER to satisfy offline constraints.")
+        ser_model = None
+        ser_feature_extractor = None
 except Exception as e:
     print(f"Warning: Failed to load SER Transformer ({e}).")
     ser_model = None
