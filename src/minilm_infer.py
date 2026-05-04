@@ -4,33 +4,48 @@ import os
 
 # Model path
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", "models", "minilm", "best")
+MINILM_ENABLED = os.environ.get("ENABLE_MINILM_FALLBACK", "1").lower() not in {"0", "false", "no"}
 
 # Global instances
 _tokenizer = None
 _model = None
+_load_attempted = False
+
+def is_available() -> bool:
+    """Return whether the optional local MiniLM fallback can be attempted."""
+    required_files = ("config.json", "tokenizer.json")
+    return MINILM_ENABLED and os.path.isdir(MODEL_DIR) and all(
+        os.path.exists(os.path.join(MODEL_DIR, name)) for name in required_files
+    )
 
 def load_model():
-    global _tokenizer, _model
+    global _tokenizer, _model, _load_attempted
+    if _load_attempted:
+        return _model is not None and _tokenizer is not None
+
+    _load_attempted = True
+    if not is_available():
+        return False
+
     if _tokenizer is None or _model is None:
         try:
             _tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR)
             _model = AutoModelForSequenceClassification.from_pretrained(MODEL_DIR)
             _model.eval()
         except Exception as e:
-            print("\n[!] MiniLM model requested.")
-            print("    Model Required: sentence-transformers/all-MiniLM-L6-v2 on Hugging Face.")
-            print("    Please download to 'models/minilm/best' or update MODEL_DIR.")
-            print("    Using placeholder interface for inference.")
+            print(f"\n[!] Optional MiniLM fallback could not be loaded from {MODEL_DIR}: {e}")
             _tokenizer = None
             _model = None
+            return False
+
+    return True
 
 def predict_chunk(text: str) -> dict:
     """
     Predicts if a ~5-second text chunk is a scam or normal.
     Returns: { "label": "scam" or "normal", "confidence": float, "risk": "low", "medium", or "high" }
     """
-    load_model()
-    if _model is None or _tokenizer is None:
+    if not load_model():
         return {"label": "error", "confidence": 0.0, "risk": "low"}
         
     inputs = _tokenizer(text, return_tensors="pt", truncation=True, padding=True, max_length=128)

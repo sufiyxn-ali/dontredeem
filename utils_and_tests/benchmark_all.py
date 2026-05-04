@@ -17,13 +17,15 @@ from src.text import transcribe, text_model
 from src.metadata import parse_metadata
 from src.fusion import fuse_scores, final_decision
 from src.analytics import SessionStateManager
+from src.main import load_diarization, extract_speaker_turns
 
 data_dir = os.path.join(root_dir, 'data')
 
 def get_true_label(filename):
     """Determine ground truth label from filename. 1 for Scam, 0 for Safe."""
     fname_lower = filename.lower()
-    if "nonscam" in fname_lower:
+    safe_markers = ("nonscam", "non scam", "not scam", "not-scam", "notscam")
+    if any(marker in fname_lower for marker in safe_markers):
         return 0
     elif "scam" in fname_lower:
         return 1
@@ -31,18 +33,21 @@ def get_true_label(filename):
 
 
 # Get files and labels
-benchmark_files = []
-y_true = []
+benchmark_items = []
 
 for f in os.listdir(data_dir):
     if not f.endswith('.wav'):
         continue
     label = get_true_label(f)
     if label is not None:
-        benchmark_files.append(f)
-        y_true.append(label)
+        benchmark_items.append((f, label))
+
+benchmark_items.sort(key=lambda item: item[0].lower())
+benchmark_files = [item[0] for item in benchmark_items]
+y_true = [item[1] for item in benchmark_items]
 
 meta_path = os.path.join(data_dir, "metadata.txt")
+diarization_model = load_diarization()
 
 print("="*70)
 print(f"BENCHMARK: Running pipeline on {len(benchmark_files)} labeled audio files")
@@ -51,7 +56,7 @@ print("="*70)
 y_pred = []
 processing_times = []
 
-for idx, audio_file in enumerate(sorted(benchmark_files)):
+for idx, audio_file in enumerate(benchmark_files):
     audio_path = os.path.join(data_dir, audio_file)
     print(f"\n[{idx+1}/{len(benchmark_files)}] FILE: {audio_file}")
     
@@ -72,8 +77,8 @@ for idx, audio_file in enumerate(sorted(benchmark_files)):
     samples_per_chunk = int(chunk_length * sr)
     full_transcript = []
     
-    # Simple Diarization Stub since it's failing in pyannote right now
-    # We will just pass the audio
+    speaker_turns = extract_speaker_turns(diarization_model, y, sr)
+    victim_speaker = None
     
     t_start = time.time()
     
@@ -82,6 +87,22 @@ for idx, audio_file in enumerate(sorted(benchmark_files)):
         chunk = y[i:i+samples_per_chunk]
         if len(chunk) < sr:
             continue
+
+        start_time = i / sr
+        end_time = min((i + samples_per_chunk) / sr, duration)
+        is_victim_only = False
+        if speaker_turns:
+            active_speakers = [
+                s["speaker"]
+                for s in speaker_turns
+                if s["start"] < end_time and s["end"] > start_time
+            ]
+            if active_speakers:
+                if victim_speaker is None:
+                    victim_speaker = active_speakers[0]
+                dominant = max(set(active_speakers), key=active_speakers.count)
+                if len(set(active_speakers)) == 1 and dominant == victim_speaker:
+                    is_victim_only = True
             
         A_t, a_inf, _ = audio_model(chunk, sr)
         
@@ -93,6 +114,9 @@ for idx, audio_file in enumerate(sorted(benchmark_files)):
             # Use rolling transcript to simulate real pipeline behavior
             rolling_text = " ".join(full_transcript[-3:])
             T_t, t_inf, suspicious_tokens = text_model(rolling_text)
+
+        if is_victim_only and T_t > 0:
+            T_t *= 0.1
             
         S_raw = fuse_scores(A_t, T_t, M_t)
         S_smoothed = session_manager.process_window(S_raw, suspicious_tokens)

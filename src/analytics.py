@@ -1,18 +1,28 @@
 class RiskAggregator:
-    def __init__(self, alpha=0.4):
+    def __init__(self, alpha_rise=0.6, alpha_decay=0.2, peak_hold_ratio=0.7):
+        """Asymmetric EMA with a peak-hold floor.
+
+        Scam calls can contain one short high-risk burst followed by harmless
+        filler. A symmetric EMA can dilute that burst. This aggregator rises
+        quickly, decays slowly, and never drops below a fraction of the session
+        peak.
         """
-        Exponential Moving Average (EMA) Aggregator.
-        Alpha controls how much weight the newest window has. 
-        Higher alpha = more reactive to sudden threats.
-        """
-        self.alpha = alpha
+        self.alpha_rise = alpha_rise
+        self.alpha_decay = alpha_decay
+        self.peak_hold_ratio = peak_hold_ratio
         self.ema_score = None
+        self.peak = 0.0
 
     def update(self, new_score):
         if self.ema_score is None:
             self.ema_score = new_score
+        elif new_score > self.ema_score:
+            self.ema_score = (new_score * self.alpha_rise) + (self.ema_score * (1 - self.alpha_rise))
         else:
-            self.ema_score = (new_score * self.alpha) + (self.ema_score * (1 - self.alpha))
+            self.ema_score = (new_score * self.alpha_decay) + (self.ema_score * (1 - self.alpha_decay))
+
+        self.peak = max(self.peak, self.ema_score)
+        self.ema_score = max(self.ema_score, self.peak * self.peak_hold_ratio)
         return self.ema_score
 
 
@@ -21,7 +31,7 @@ class SessionStateManager:
         self.total_windows = 0
         self.risk_history = []
         self.suspicious_tokens = set()
-        self.aggregator = RiskAggregator(alpha=0.5)
+        self.aggregator = RiskAggregator()
 
     def process_window(self, fused_score, tokens):
         """Records the window and returns the temporally smoothed EMA score."""

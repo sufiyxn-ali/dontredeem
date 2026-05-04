@@ -8,7 +8,6 @@ import torch.nn as nn
 import numpy as np
 import pickle
 import json
-from transformers import pipeline
 
 # ==================== BiLSTM Model Definition ====================
 class BiLSTMScamDetector(nn.Module):
@@ -122,7 +121,7 @@ class ScamDetectionTokenizer:
 class ScamDetectionModel:
     """Unified loader for BiLSTM model + tokenizer"""
     
-    def __init__(self, model_dir='models/DistillBertini/files/model'):
+    def __init__(self, model_dir='models/BiLSTM'):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = None
         self.tokenizer = None
@@ -130,8 +129,8 @@ class ScamDetectionModel:
         self.model_dir = model_dir
         
         print(f"[*] Initializing Scam Detection Model (device: {self.device})")
-        self._load_model()
         self._load_tokenizer()
+        self._load_model()
     
     def _load_model(self):
         """Load trained BiLSTM model"""
@@ -159,8 +158,12 @@ class ScamDetectionModel:
                 with open(config_path, 'r') as f:
                     self.config = json.load(f)
             
-            # Initialize and load model
+            # Initialize and load model. Prefer the tokenizer's vocabulary size
+            # because the added local BiLSTM ships with 4719 tokens while the
+            # config may be rounded up for training metadata.
             vocab_size = self.config.get('vocab_size', 4729)
+            if self.tokenizer is not None and self.tokenizer.vocab_size > 0:
+                vocab_size = self.tokenizer.vocab_size
             embedding_dim = self.config.get('embedding_dim', 128)
             hidden_dim = self.config.get('hidden_dim', 256)
             
@@ -226,24 +229,45 @@ sys.path.append(os.path.dirname(__file__))
 import minilm_infer
 
 scam_detector = None
+minilm_fallback = None
 asr_pipeline = None
 
 try:
-    # Warm up MiniLM
-    minilm_infer.load_model()
-    scam_detector = minilm_infer
+    scam_detector = ScamDetectionModel()
 except Exception as e:
-    print(f"[!] Warning: MiniLM Scam detector initialization failed: {e}")
+    print(f"[!] Warning: BiLSTM Scam detector initialization failed: {e}")
 
-# Load ASR pipeline for transcription
-print("[*] Loading speech recognition pipeline (openai/whisper-tiny)...")
 try:
-    asr_device = 0 if torch.cuda.is_available() else -1
-    asr_pipeline = pipeline("automatic-speech-recognition", model="openai/whisper-tiny", device=asr_device)
-    print(f"    [OK] ASR pipeline loaded (device: {'GPU' if asr_device == 0 else 'CPU'})")
+    if minilm_infer.is_available():
+        minilm_fallback = minilm_infer
+        print("[*] MiniLM fallback is available and will be used only for uncertain BiLSTM cases.")
+    else:
+        print("[*] MiniLM fallback unavailable; continuing with BiLSTM + rules.")
 except Exception as e:
-    print(f"    [!] Warning: Failed to load ASR pipeline: {e}")
-    asr_pipeline = None
+    print(f"[!] Warning: MiniLM fallback check failed: {e}")
+    minilm_fallback = None
+
+whisper_model_path = os.path.join(os.path.dirname(__file__), "..", "models", "faster-whisper-small")
+if os.path.exists(whisper_model_path):
+    print("[*] Loading local Faster Whisper model...")
+    try:
+        from faster_whisper import WhisperModel
+        # Load local CTranslate2 Whisper model
+        asr_pipeline = WhisperModel(whisper_model_path, device="cuda" if torch.cuda.is_available() else "cpu", compute_type="int8")
+        print("    [OK] Faster Whisper ASR loaded successfully.")
+    except Exception as e:
+        print(f"    [!] Failed to load local Faster Whisper: {e}")
+        asr_pipeline = None
+else:
+    print("[*] Speech recognition pipeline requested.")
+    print(f"    Model Required: {whisper_model_path}")
+    print("    Using placeholder interface for ASR to satisfy offline constraints.")
+
+    class MockASRPipeline:
+        def __call__(self, input_dict, generate_kwargs=None):
+            return {"text": "This is a placeholder transcript. Please provide real ASR model for actual transcripts."}
+
+    asr_pipeline = MockASRPipeline()
 
 # ==================== Keyword Detection ====================
 CRITICAL_KEYWORDS = {
@@ -430,9 +454,15 @@ def transcribe(y, sr):
         return ""
     
     try:
-        result = asr_pipeline({"array": y, "sampling_rate": sr}, 
-                            generate_kwargs={"task": "transcribe", "language": "en"})
-        return result.get('text', '').strip()
+        # Check if asr_pipeline is the faster_whisper WhisperModel
+        if hasattr(asr_pipeline, 'transcribe'):
+            segments, info = asr_pipeline.transcribe(y, beam_size=5, language="en", condition_on_previous_text=False)
+            text = " ".join([segment.text for segment in segments])
+            return text.strip()
+        else:
+            result = asr_pipeline({"array": y, "sampling_rate": sr},
+                                generate_kwargs={"task": "transcribe", "language": "en"})
+            return result.get('text', '').strip()
     except Exception as e:
         print(f"      [ASR Error]: {e}")
         return ""
@@ -484,14 +514,32 @@ def text_model(transcript):
     
     has_any_legitimacy = has_strong_legitimacy or has_weak_legitimacy or has_official_sender
     
-    # Get MiniLM model prediction
+    # Get BiLSTM model prediction. MiniLM is intentionally optional and
+    # secondary: it only helps when BiLSTM cannot answer or lands near the
+    # decision boundary.
     model_score = 0.5
+    bilstm_score = None
+    minilm_score = None
     if scam_detector is not None:
         try:
-            res = scam_detector.predict_chunk(transcript)
-            model_score = res['confidence']
+            res = scam_detector.predict(transcript)
+            if res is not None:
+                bilstm_score = res
+                model_score = bilstm_score
         except Exception as e:
-            print(f"      [Error] MiniLM prediction failed: {e}")
+            print(f"      [Error] BiLSTM prediction failed: {e}")
+
+    should_use_minilm = bilstm_score is None or 0.40 <= bilstm_score <= 0.60
+    if should_use_minilm and minilm_fallback is not None:
+        try:
+            minilm_res = minilm_fallback.predict_chunk(transcript)
+            minilm_score = float(minilm_res.get("confidence", 0.0))
+            if bilstm_score is None:
+                model_score = minilm_score
+            else:
+                model_score = (bilstm_score * 0.80) + (minilm_score * 0.20)
+        except Exception as e:
+            print(f"      [Error] MiniLM fallback prediction failed: {e}")
     
     # ===== FALSE POSITIVE REDUCTION LOGIC =====
     # If strong legitimacy signals are present, cap the BiLSTM score
@@ -553,9 +601,12 @@ def text_model(transcript):
     analysis_parts = []
     
     if scam_detector is not None:
-        analysis_parts.append(f"MiniLM: {model_score:.1%}")
+        analysis_parts.append(f"BiLSTM: {model_score:.1%}")
     else:
-        analysis_parts.append("MiniLM: N/A")
+        analysis_parts.append("BiLSTM: N/A")
+
+    if minilm_score is not None:
+        analysis_parts.append(f"MiniLM fallback: {minilm_score:.1%}")
     
     if has_strong_legitimacy:
         analysis_parts.append("[Legitimate Business Email]")
@@ -563,7 +614,7 @@ def text_model(transcript):
         analysis_parts.append("[Partial Legitimacy Signals]")
     
     if critical_keywords:
-        analysis_parts.append(f"⚠ CRITICAL: {', '.join(critical_keywords[:3])}")
+        analysis_parts.append(f"CRITICAL: {', '.join(critical_keywords[:3])}")
     
     if scam_indicators:
         top_keywords = sorted(scam_indicators, key=lambda x: x[1], reverse=True)[:3]
