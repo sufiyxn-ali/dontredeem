@@ -18,27 +18,25 @@ from fusion import fuse_scores, final_decision
 from analytics import SessionStateManager
 
 def load_diarization():
+    HF_TOKEN = os.environ.get("HF_TOKEN")
+    if not HF_TOKEN:
+        print("\n[!] WARNING: 'HF_TOKEN' environment variable not set.")
+        print("    Speaker Diarization bypassed. Analyzing entire audio track unconditionally.")
+        return None
+        
     try:
         from pyannote.audio import Pipeline
-        config_path = os.path.abspath(os.path.join(
-            os.path.dirname(__file__), '..', 'models', 'pyannote', 'speaker-diarization-3.1', 'config.yaml'
-        ))
-        
-        if not os.path.exists(config_path):
-            print("\n[!] WARNING: Offline Pyannote config not found.")
-            print("    Please run 'python utils_and_tests/localize_pyannote.py' first.")
-            print("    Speaker Diarization bypassed. Analyzing entire audio track unconditionally.")
-            return None
-            
-        print(f"\n[!] Loading localized offline Pyannote Diarization...")
-        pipeline = Pipeline.from_pretrained(config_path)
-        
+        print(f"\n[!] Authenticating Pyannote Diarization with HF_TOKEN...")
+        pipeline = Pipeline.from_pretrained(
+            "pyannote/speaker-diarization-3.1",
+            use_auth_token=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
+        )
         # Send to GPU if available
         if torch.cuda.is_available():
             pipeline.to(torch.device("cuda"))
         return pipeline
     except Exception as e:
-        print(f"\n[!] Failed to load Pyannote Pipeline locally: {e}")
+        print(f"\n[!] Failed to load Pyannote Pipeline: {e}")
         return None
 
 def run_pipeline(audio_path, metadata_path):
@@ -70,15 +68,8 @@ def run_pipeline(audio_path, metadata_path):
     if diarization_model:
         try:
             print("      Diarizing audio file (this may take a moment)...")
-            # Pass pre-loaded waveform to bypass broken torchcodec file decoding.
-            # Pyannote accepts {"waveform": (channel, time) tensor, "sample_rate": int}
-            waveform_tensor = torch.from_numpy(y).unsqueeze(0)  # (1, samples) — mono channel
-            diar_input = {"waveform": waveform_tensor, "sample_rate": sr}
-            diar_result = diarization_model(diar_input)
-            
-            # Pyannote 4.x returns DiarizeOutput dataclass — itertracks() is on .speaker_diarization
-            annotation = getattr(diar_result, 'speaker_diarization', diar_result)
-            for turn, _, speaker in annotation.itertracks(yield_label=True):
+            diar_result = diarization_model(audio_path)
+            for turn, _, speaker in diar_result.itertracks(yield_label=True):
                 speaker_turns.append({"speaker": speaker, "start": turn.start, "end": turn.end})
             print(f"      Found {len(speaker_turns)} speaker turns.")
         except Exception as e:
@@ -88,14 +79,8 @@ def run_pipeline(audio_path, metadata_path):
     chunk_length = 5.0 # seconds
     samples_per_chunk = int(chunk_length * sr)
     
-    # Rolling Transcript Buffer: concatenate last N windows to catch split sentences
-    TRANSCRIPT_BUFFER_SIZE = 3
-    transcript_buffer = []
-    
-    # Diarization: identify the first speaker as the "victim" (phone owner)
-    victim_speaker = None
-    
     print("\n[4/4] Starting Sliding Window Inference...")
+    mfcc_shape_printed = False
     
     for i in range(0, len(y), samples_per_chunk):
         chunk = y[i:i+samples_per_chunk]
@@ -106,22 +91,13 @@ def run_pipeline(audio_path, metadata_path):
         
         print(f"\n- Window [{start_time:.1f}s - {end_time:.1f}s]")
         
-        # Diarization Validation: identify dominant speaker and suppress victim-only chunks
-        is_victim_only = False
+        # Diarization Validation: Check if this chunk is just the victim validating
+        # If diarization is active, track the dominant speaker.
         if speaker_turns:
+            # check which speaker dominates the chunk
             active_speakers = [s['speaker'] for s in speaker_turns if s['start'] < end_time and s['end'] > start_time]
             if active_speakers:
-                # First speaker encountered is assumed to be the victim (they answered the phone)
-                if victim_speaker is None:
-                    victim_speaker = active_speakers[0]
-                    
-                dominant = max(set(active_speakers), key=active_speakers.count)
-                print(f"  [Diarization]: Active -> {set(active_speakers)} | Dominant: {dominant}")
-                
-                # If only the victim is speaking, suppress the threat score
-                if len(set(active_speakers)) == 1 and dominant == victim_speaker:
-                    is_victim_only = True
-                    print(f"  [Diarization]: Victim-only chunk. Suppressing threat score.")
+                print(f"  [Diarization]: Active speakers in chunk -> {set(active_speakers)}")
             else:
                 print(f"  [Diarization]: Silence.")
                 
@@ -134,27 +110,17 @@ def run_pipeline(audio_path, metadata_path):
         t_inf = ""
         suspicious_tokens = []
         
-        # Text Pipeline: always transcribe for the rolling buffer
-        transcript = transcribe(chunk, sr)
-        if transcript:
-            transcript_buffer.append(transcript)
-            # Keep only the last N chunks in the buffer
-            if len(transcript_buffer) > TRANSCRIPT_BUFFER_SIZE:
-                transcript_buffer.pop(0)
-            
-            # Use the rolling concatenated transcript for analysis
-            rolling_transcript = " ".join(transcript_buffer)
-            print(f"  [Transcript]: '{transcript}'")
-            T_t, t_inf, suspicious_tokens = text_model(rolling_transcript)
-            print(f"  [Score] Text: {T_t:.4f}")
-            print(f"  [Analysis]: {t_inf}")
-        
-        # Diarization suppression: if only victim is speaking, zero the text score
-        if is_victim_only:
-            T_t = T_t * 0.1  # Heavily suppress, don't fully zero (victim might be reading back scam text)
-            print(f"  [Suppressed] Victim-only text score reduced to {T_t:.4f}")
+        # Text Pipeline (conditional)
+        if A_t > 0.1 or True: 
+            transcript = transcribe(chunk, sr)
+            if transcript:
+                print(f"  [Transcript]: '{transcript}'")
+                T_t, t_inf, suspicious_tokens = text_model(transcript)
+                print(f"  [Score] Text: {T_t:.4f}")
+                print(f"  [Analysis]: {t_inf}")
         
         # 6. Risk Fusion & Aggregation
+        # Initial fusion score
         S_raw = fuse_scores(A_t, T_t, M_t)
         
         # Feed to Session State (EMA Smoothing)
@@ -186,11 +152,11 @@ def run_pipeline(audio_path, metadata_path):
 
 if __name__ == "__main__":
     # Ensure env variable is set if debugging manually
-    # Note: HF_TOKEN is no longer required due to localization.
-
+    # os.environ["HF_TOKEN"] = "YOUR_TOKEN_HERE" 
+    
     data_dir = os.path.join(os.path.dirname(__file__), '..', 'data')
     meta_path = os.path.join(data_dir, "metadata.txt")
-    audio_path = os.path.join(data_dir, "sample_call_notscam.wav")
+    audio_path = os.path.join(data_dir, "Scamma2.wav")
     
     if not os.path.exists(meta_path):
         with open(meta_path, "w") as f: f.write("12/03/2026 23:45, unsaved")

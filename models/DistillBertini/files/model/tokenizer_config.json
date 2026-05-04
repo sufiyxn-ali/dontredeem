@@ -1,0 +1,18 @@
+{
+  "tokenizer_type": "scam_detection",
+  "vocab_size": 5000,
+  "max_seq_length": 256,
+  "model_type": "bilstm",
+  "special_tokens": {
+    "[PAD]": 0,
+    "[UNK]": 1,
+    "[CLS]": 2,
+    "[SEP]": 3,
+    "[URGENT]": 4,
+    "[MONEY]": 5,
+    "[THREAT]": 6,
+    "[VERIFY]": 7,
+    "[PERSONAL]": 8,
+    "[ACCOUNT]": 9
+  }
+}

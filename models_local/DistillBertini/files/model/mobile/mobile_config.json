@@ -1,0 +1,17 @@
+{
+  "model_type": "bilstm",
+  "input_format": "token_ids",
+  "max_seq_length": 256,
+  "vocab_size": 4719,
+  "num_classes": 2,
+  "class_names": [
+    "Legitimate",
+    "Scam"
+  ],
+  "tokenizer_file": "scam_tokenizer.pkl",
+  "models": {
+    "onnx": "scam_detector.onnx",
+    "onnx_quantized": "scam_detector_int8.onnx",
+    "tflite": "scam_detector.tflite"
+  }
+}

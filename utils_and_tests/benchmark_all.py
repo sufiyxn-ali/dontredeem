@@ -23,14 +23,12 @@ data_dir = os.path.join(root_dir, 'data')
 def get_true_label(filename):
     """Determine ground truth label from filename. 1 for Scam, 0 for Safe."""
     fname_lower = filename.lower()
-    # Explicitly labeled as not scam
-    if "not scam" in fname_lower or "notscam" in fname_lower:
+    if "nonscam" in fname_lower:
         return 0
-    # Explicitly labeled as scam
     elif "scam" in fname_lower:
         return 1
-    # Ambiguous files are skipped
-    return None
+    return 0
+
 
 # Get files and labels
 benchmark_files = []

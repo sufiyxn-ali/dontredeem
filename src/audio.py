@@ -57,23 +57,21 @@ def audio_model(y, sr):
     # Base Acoustic Heuristics
     # -------------------------
     heuristic_score = 0.0
-    if features['pitch'] > 250:
-        heuristic_score += 0.2
-        inferences.append("High pitch (stress marker)")
-    elif features['pitch'] > 150:
-        heuristic_score += 0.05
-        
-    if features['rate'] > 4.0:
-        heuristic_score += 0.25
-        inferences.append(f"Fast urgency ({features['rate']:.1f} ons/s)")
-    elif features['rate'] > 2.5:
-        heuristic_score += 0.1
-        
-    if features['centroid'] > 3000:
+    if features['pitch'] > 280:
         heuristic_score += 0.15
-        inferences.append("Bright/Piercing Tone")
-    elif features['centroid'] > 1500:
+        inferences.append("High pitch (stress marker)")
+    elif features['pitch'] > 180:
         heuristic_score += 0.05
+        
+    if features['rate'] > 4.5:
+        heuristic_score += 0.15
+        inferences.append(f"Fast urgency ({features['rate']:.1f} ons/s)")
+    elif features['rate'] > 3.0:
+        heuristic_score += 0.05
+        
+    if features['centroid'] > 3500:
+        heuristic_score += 0.10
+        inferences.append("Bright/Piercing Tone")
     heuristic_score = min(max(heuristic_score, 0.0), 1.0)
     
     # -------------------------

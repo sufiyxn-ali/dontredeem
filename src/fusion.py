@@ -16,18 +16,29 @@ def fuse_scores(audio_score, text_score, meta_score):
         w_t = 0.7
         w_m = 0.2
         
+    # Veto Logic: If both audio and text are very low, suppress the metadata score's influence
+    # This prevents unsaved/late-night calls from being flagged if the conversation is normal.
+    if audio_score < 0.15 and text_score < 0.15:
+        w_m = 0.05 
+        
+    # Semantic Veto: If text is extremely safe (< 0.1), cap the influence of aggressive audio.
+    # We don't want to flag someone just because they are talking loudly or stressed about something safe.
+    if text_score < 0.1:
+        audio_score = min(audio_score, 0.4)
+        w_m = min(w_m, 0.05) # Metadata shouldn't matter if text is perfectly safe
+        
     S_t = (w_a * audio_score) + (w_t * text_score) + (w_m * meta_score)
     return S_t
 
 def final_decision(S_final):
     """
-    If S_final > 0.7 -> Likely Scam
-    If 0.4 < S_final <= 0.7 -> Suspicious
+    If S_final > 0.75 -> Likely Scam
+    If 0.49 < S_final <= 0.75 -> Suspicious
     Else -> Safe
     """
-    if S_final > 0.7:
+    if S_final > 0.75:
         return "Likely Scam"
-    elif S_final > 0.4:
+    elif S_final > 0.49:
         return "Suspicious"
     else:
         return "Safe"
